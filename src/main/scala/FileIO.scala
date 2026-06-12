@@ -1,6 +1,7 @@
 import scala.io.Source
 import org.json4s._
 import org.json4s.jackson.JsonMethods._
+import java.io.FileNotFoundException
 
 object FileIO {
 
@@ -10,17 +11,26 @@ object FileIO {
    * @return list of options: Some(Subscription) for valid entries, None for malformed entries
    *         returns empty list if file not found
    */
-  def readSubscriptions(filePath: String): List[Option[Subscription]] = {
+  def readSubscriptions(filePath: String): Either[String, List[Subscription]] = {
     implicit val formats: Formats = DefaultFormats
-    val source = Source.fromFile(filePath)
-    val content = source.mkString
-    source.close()
+    try {
+      val source = Source.fromFile(filePath)
+      val content = source.mkString
+      source.close()
 
-    val json = parse(content)
-    val subscriptions = json.extract[List[Map[String, String]]]
+      val json = parse(content)
+      val subscriptions = json.extract[List[Map[String, String]]]
 
-    subscriptions.map { sub =>
-      Some(Subscription(sub("name"), sub("url")))
+      Right(subscriptions.map { sub => 
+        (sub.get("name"), sub.get("url")) match {
+          case (Some(name), Some(url)) => Some(Subscription(name, url))
+          case _ => println("Warning: Skipping malformed subscription (missing 'name' or 'url' field)"); None
+        }
+      }.flatten)
+
+    } catch {
+      case e: FileNotFoundException => Left(s"Error: Could not load $filePath - file not found")
+      case e: Exception => Left(s"Error: Could not load $filePath - invalid JSON format")
     }
   }
 
@@ -30,10 +40,14 @@ object FileIO {
    * @return Option containing JSON as String, None on network error or timeout
    */
   def downloadFeed(url: String): Option[String] = {
-    val source = Source.fromURL(url)
-    val content = source.mkString
-    source.close()
-    Some(content)
+    try {
+      val source = Source.fromURL(url)
+      val content = source.mkString
+      source.close()
+      Some(content)
+    } catch {
+      case e: Exception => None
+    }
   }
 
   /**

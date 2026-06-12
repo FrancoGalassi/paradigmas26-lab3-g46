@@ -18,7 +18,23 @@ object Main {
 
     // Load subscriptions
     // lee archivo de subscriptions
-    val subscriptionOpts = FileIO.readSubscriptions(cmdArgs.subscriptionFile).flatten
+    val subscriptionOpts = FileIO.readSubscriptions(cmdArgs.subscriptionFile)
+      match {
+        case Right(subs) => subs
+        case Left(error) => 
+          println(error)
+          return
+      }
+    // si no hay suscripciones validas, salir con error
+    if (subscriptionOpts.isEmpty) {
+      println("Error: No valid subscriptions found")
+      return
+    }
+
+    val feedsSuccess = sc.longAccumulator("feedsSuccess")
+    val feedsFailed = sc.longAccumulator("feedsFailed")
+    val postsSuccess = sc.longAccumulator("postsSuccess")
+    val postsFailed = sc.longAccumulator("postsFailed")
 
     // carga en el rdd 
     val subs_rdd = sc.parallelize(subscriptionOpts)
@@ -31,39 +47,50 @@ object Main {
     // devuelve lista de todos los posts
     val downloadResults = subs_rdd.flatMap { subscription =>
       val feedOpt = FileIO.downloadFeed(subscription.url)
-      val posts = feedOpt.fold(List[Post]())(JsonParser.parsePosts(_, subscription.name))
-      posts
+      feedOpt match {
+        case None => {
+          println(s"Warning: Failed to download from '${subscription.name}' (${subscription.url})")
+          feedsFailed.add(1) // incrementa contador de feeds fallidos
+          List()
+        }  
+        case Some(content) => {
+          feedsSuccess.add(1)
+          val postsOpt = JsonParser.parsePosts(content, subscription.name)
+          // JsonParser.parsePosts ahora devuelve Option[List[Post]].
+          postsOpt match {
+            case None =>
+              println(s"Warning: Failed to parse JSON from '${subscription.name}'")
+              postsFailed.add(1)
+              List()
+            case Some(posts) =>
+              postsSuccess.add(posts.length.toLong)
+              posts
+          }
+        }
+      }
     }
-
-    // Count feed successes/failures
-    val feedsSuccess = downloadResults.count()
-    /////val feedsFailed = downloadResults.length - feedsSuccess
-
-    // Flatten all posts and count JSON parse failures
-    // val allPosts = downloadResults.flatMap(_._2)  no hace falta porque ahora downloadResults no devuelve (bool, List[post])
-    val postsSuccess = downloadResults.count()  // cuenta la cantidad de posts en la lista
-    /////val postsFailed = downloadResults.count(_._2.isEmpty)
-
     // Filter empty posts 
     // el del analyzer pero adaptado para rdd
     val filteredPosts = downloadResults.filter { post =>
         post.title.nonEmpty &&
         post.selftext.nonEmpty &&
         post.selftext.trim.nonEmpty
-      }
+    }
 
-    val postsFiltered = downloadResults.count() - filteredPosts.count()
+    val totalPosts = filteredPosts.count()
+
+    val postsFiltered = postsSuccess.value - totalPosts
 
     // Calculate average characters in filtered posts
     val totalChars = filteredPosts.map(post => post.title.length + post.selftext.length).sum
-    val avgChars = if (filteredPosts.count() > 0) totalChars / filteredPosts.count() else 0
+    val avgChars = if (totalPosts > 0) totalChars / totalPosts else 0
 
     // Prepare statistics
     val stats = Map(
-      "feedsSuccess" -> 0,   // 0 hasta arreglarlo
-      "feedsFailed" -> 0,
-      "postsSuccess" -> postsSuccess.toInt, 
-      "postsFailed" -> 0,
+      "feedsSuccess" -> feedsSuccess.value.toInt,
+      "feedsFailed" -> feedsFailed.value.toInt,
+      "postsSuccess" -> postsSuccess.value.toInt, 
+      "postsFailed" -> postsFailed.value.toInt,
       "postsFiltered" -> postsFiltered.toInt,
       "avgChars" -> avgChars.toInt //.toint porque count devuelve long y stats espera Map[String, Int]
     )
@@ -73,7 +100,7 @@ object Main {
     println()
 
     // Check if we have any posts to process
-    if (filteredPosts.count() == 0) {
+    if (totalPosts == 0) {
       println("Error: No valid posts downloaded after filtering")
       return
     }
@@ -85,8 +112,8 @@ object Main {
     //  es del ej 3 arreglar esto
     //  Detect entities in all posts (combine title and selftext)
     val allEntities = filteredPosts.flatMap { post =>
-    val combinedText = post.title + " " + post.selftext
-    Analyzer.detectEntities(combinedText, dictionary)
+      val combinedText = post.title + " " + post.selftext
+      Analyzer.detectEntities(combinedText, dictionary)
     }
 
     // después de detectar las entidades, mapea a [(tipo, nombre), 1] para después contarlas 
