@@ -1,1 +1,1 @@
-case class Post(title: String, selftext: String)
+case class Post(title: String, selftext: String) extends Serializable

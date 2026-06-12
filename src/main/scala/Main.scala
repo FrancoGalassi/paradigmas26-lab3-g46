@@ -84,20 +84,33 @@ object Main {
 
     //  es del ej 3 arreglar esto
     //  Detect entities in all posts (combine title and selftext)
-      val allEntities = filteredPosts.flatMap { post =>
-      val combinedText = post.title + " " + post.selftext
-      Analyzer.detectEntities(combinedText, dictionary)
+    val allEntities = filteredPosts.flatMap { post =>
+    val combinedText = post.title + " " + post.selftext
+    Analyzer.detectEntities(combinedText, dictionary)
     }
 
-    //como el analyzer usa listas, se guarda en spark con collect().toList
+    // después de detectar las entidades, mapea a [(tipo, nombre), 1] para después contarlas 
+    val entity_par = allEntities.map { entity =>
+      ((entity.entityType, entity.text), 1)
+    }
 
-    val allEntitiesList = allEntities.collect().toList
     // Count entities
-    val entityCounts = Analyzer.countEntities(allEntitiesList)
-    val typeStats = Analyzer.countByType(allEntitiesList)
+    val entityCounts = entity_par.reduceByKey((suma,valor) => suma + valor)
 
-    println(Formatters.formatTypeStats(typeStats))
+    // convierte las entities a map
+    val entityCountsMap: Map[(String, String), Int] = entityCounts
+      .collect()
+      .toMap
+
+
+    val typeStatsMap: Map[String, Int] = entityCounts
+      .map { case ((tipo, _), count) => (tipo, count) }   // deja solo el tipo de cada entidad
+      .reduceByKey((suma,valor) => suma + valor)          // combina su cantidad de apariciones
+      .collect()
+      .toMap + ("total" -> entityCountsMap.values.sum)
+
+    println(Formatters.formatTypeStats(typeStatsMap))
     println()
-    println(Formatters.formatEntityStats(entityCounts, cmdArgs.topK))
+    println(Formatters.formatEntityStats(entityCountsMap, cmdArgs.topK))
   }
 }
