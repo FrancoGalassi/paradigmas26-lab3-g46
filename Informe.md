@@ -89,3 +89,54 @@ La función debe ser **asociativa** y **conmutativa**. Spark realiza reducciones
 
 La lectura del diccionario se hace en el **driver**, antes de cualquier transformación distribuida. El diccionario se carga con `Dictionary.loadAll(cmdArgs.entitiesDir)` y el resultado es una `List[NamedEntity]` que luego se captura en el closure del `flatMap`. Spark serializa esa lista y la envía a cada worker junto con la función. 
 
+
+## Ejercicio 4
+
+**¿Por qué los Accumulators solo deben usarse para métricas y no para tomar decisiones lógicas?**
+
+Los Accumulators son variables que los workers solo pueden incrementar y el driver solo puede leer. Estos pueden dar un valor incorrecto cuando Spark reintenta una tarea fallida. Si una tarea falla y se reintenta, el accumulator se incrementa dos veces por el mismo trabajo, una por la tarea fallida y otra por el reintento exitoso. Spark no deshace los incrementos de tareas fallidas, por lo que el valor final puede ser mayor al real causando conclusiones incorrectas si se basan puramente en ellos.
+
+
+**¿En qué momento está disponible el valor de un Accumulator para el driver?**
+
+El valor de un Accumulator solo es confiable después de que se completa una acción terminal (como `count()`, `collect()`, o `reduce()`). Antes de eso, el pipeline es lazy y los workers no han ejecutado nada, por lo que el accumulator vale 0 aunque el código que lo incrementa ya esté definido. En nuestro caso, los accumulators tienen sus valores correctos recién después del primer `count()` que dispara el pipeline de descarga.
+
+---
+
+**Comparación de tiempos entre versión secuencial y versión con Spark**
+
+Para la cantidad de datos que estamos trabajando , la versión con Spark no muestra una mejora apreciable respecto a la versión secuencial, en este caso incluso es más lenta. Esto se debe a que Spark tiene un overhead de inicialización significativo: crear la SparkSession, el SparkContext, serializar los datos y distribuir las tareas entre workers toma tiempo fijo independientemente del volumen de datos.
+Con datasets pequeños, ese overhead domina el tiempo total y supera el beneficio de la paralelización. La ventaja de Spark se vuelve apreciable cuando el volumen de datos es grande. Por ejemplo, cientos de feeds con miles de posts cada uno, donde el tiempo de procesamiento paralelo supera ampliamente el costo de inicialización. Para el caso de uso de este laboratorio, la diferencia no es significativa, pero el código está preparado para escalar sin modificaciones.
+
+**Resultados del skeleton base**
+
+
+![skeleton](./Informe-media/skeletontime.png)
+
+**SparkUi**
+![sparkui](./Informe-media/sparkui.png)
+
+
+| Etapa | Secuencial | Spark |
+|-------|-----------|-------|
+| Cómputo de entidades | 0.059 s | ~0.3 s (Jobs 4+5) |
+| Total sbt run | 24 s | ~30 s |
+
+**Conclusión**: Para este dataset pequeño, la versión con Spark es más lenta en total debido al overhead de inicialización. El cómputo de entidades es incluso más rápido en la versión secuencial porque no tiene el costo de serialización y distribución de tareas. Sin embargo, la descarga de feeds sería donde Spark mostraría ventaja con más datos, al paralelizar las requests HTTP.
+
+## Ejercicio 5
+
+**¿Qué ocurriría si no llamaran a cache()? ¿Cuántas veces se ejecutaría la descarga de feeds?**
+
+Sin `.cache()`, cada acción sobre un RDD recomputa todo el pipeline desde el principio, incluyendo las descargas HTTP. En nuestro código, `downloadResults` y `filteredPosts` son utilizados por múltiples acciones (`count()`, `sum()`, `flatMap()`, `collect()`). Sin cache, cada una de esas acciones volvería a descargar los 4 feeds desde el servidor, ejecutando la descarga aproximadamente 6-7 veces en total. Volviéndose muy ineficiente y lento.
+
+
+**¿Por qué es incorrecto llamar a collect() entre los pasos a) y b) del ejercicio 3 y luego continuar el pipeline? ¿Qué consecuencia tiene sobre la distribución del trabajo?**
+
+Si se llama a `collect()` entre el `flatMap` y el `map`, se trae toda la data al driver y las operaciones siguientes (`map`, `reduceByKey`) se ejecutan localmente en el driver en vez de distribuirse entre los workers. Esto rompe el modelo distribuido de Spark: el trabajo deja de paralelizarse y pasa a ejecutarse secuencialmente en un único proceso. Además, si el dataset es grande, el driver podría quedarse sin memoria al intentar cargar todos los datos.
+
+---
+
+**cache() es también lazy. ¿En qué momento se almacena realmente el RDD en memoria?**
+
+Llamar a `.cache()` solo marca el RDD para ser persistido, pero no lo materializa inmediatamente. El RDD se almacena en memoria la primera vez que se ejecuta una acción sobre él (`count()`, `collect()`, `sum()`, etc.). En ese momento Spark computa el RDD, lo guarda en memoria, y las acciones siguientes lo leen directamente sin recomputar el pipeline desde el principio.
