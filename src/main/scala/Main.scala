@@ -45,6 +45,7 @@ object Main {
 
     // Download feeds and parse posts, tracking success/failure
     // devuelve lista de todos los posts
+    val t1 = System.currentTimeMillis()
     val downloadResults = subs_rdd.flatMap { subscription =>
       val feedOpt = FileIO.downloadFeed(subscription.url)
       feedOpt match {
@@ -68,14 +69,14 @@ object Main {
           }
         }
       }
-    }
+    }.cache()
     // Filter empty posts 
     // el del analyzer pero adaptado para rdd
     val filteredPosts = downloadResults.filter { post =>
         post.title.nonEmpty &&
         post.selftext.nonEmpty &&
         post.selftext.trim.nonEmpty
-    }
+    }.cache()
 
     val totalPosts = filteredPosts.count()
 
@@ -84,7 +85,9 @@ object Main {
     // Calculate average characters in filtered posts
     val totalChars = filteredPosts.map(post => post.title.length + post.selftext.length).sum
     val avgChars = if (totalPosts > 0) totalChars / totalPosts else 0
-
+    val t2 = System.currentTimeMillis()
+    println(s"Tiempo descarga y filtrado: ${(t2 - t1) / 1000.0} segundos")
+    
     // Prepare statistics
     val stats = Map(
       "feedsSuccess" -> feedsSuccess.value.toInt,
@@ -99,8 +102,11 @@ object Main {
     println(Formatters.formatProcessingStats(stats))
     println()
 
+    downloadResults.unpersist()
+
     // Check if we have any posts to process
     if (totalPosts == 0) {
+      filteredPosts.unpersist()
       println("Error: No valid posts downloaded after filtering")
       return
     }
@@ -123,7 +129,8 @@ object Main {
 
     // Count entities
     val entityCounts = entity_par.reduceByKey((suma,valor) => suma + valor)
-
+    
+    val t3 = System.currentTimeMillis()
     // convierte las entities a map
     val entityCountsMap: Map[(String, String), Int] = entityCounts
       .collect()
@@ -139,5 +146,8 @@ object Main {
     println(Formatters.formatTypeStats(typeStatsMap))
     println()
     println(Formatters.formatEntityStats(entityCountsMap, cmdArgs.topK))
+    val t4 = System.currentTimeMillis()
+    println(s"Tiempo cómputo de entidades: ${(t4 - t3) / 1000.0} segundos")
+    filteredPosts.unpersist()
   }
 }
